@@ -1,0 +1,92 @@
+name: Generate terraform docs
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v40
+
+      - name: List all changed files
+        id: file_changes
+        run: |
+          module_paths=()
+          for file in ${{ steps.changed-files.outputs.all_changed_files }}; do
+            echo "$file was changed"
+            if [ $(dirname $file | grep -v '\.') ]
+            then
+              file_path=$(dirname $file)
+              if [[ " ${module_paths[*]} " != *" $file_path "* ]]
+              then
+                module_paths+=($file_path)
+              fi
+            fi
+          done
+          echo "docpaths=false" >> $GITHUB_OUTPUT
+          if [ ${#module_paths[*]} -gt 0 ]
+          then
+            echo "MPATHS=$(echo ${module_paths[*]} | sed 's/ /,/g')" >> $GITHUB_ENV
+            echo "docpaths=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Debug
+        run: |
+          echo "Step File Changed: ${{ steps.file_changes.outputs.docpaths }}"
+          echo "MPATHS: ${MPATHS}"
+          echo "ENV MPATHS: ${{ env.MPATHS }}"
+
+      # Install Terraform CLI
+      - name: Setup Terraform
+        if: |
+          (steps.file_changes.outputs.docpaths == 'true')
+        uses: hashicorp/setup-terraform@v2.0.3
+        with:
+          terraform_version: ${{ vars.TERRAFORM_VERSION }}
+
+      - name: Terraform Validation
+        if: |
+          (steps.file_changes.outputs.docpaths == 'true')
+        run: |
+          for modulepath in $(echo ${MPATHS} | tr "," " ")
+          do
+            echo "#=========================================================#"
+            echo "# Validating Module ${modulepath}"
+            echo "#=========================================================#"
+            cd ${modulepath}
+            echo "[INFO] Current Working Directory is $(pwd)"
+            echo "[INFO] Running \"terraform init\""
+            terraform init -input=false > /dev/null
+            echo "[INFO] Running \"terraform fmt -check -diff\""
+            terraform fmt -check -diff
+            echo "[INFO] Running \"terraform validate\""
+            terraform validate
+            cd ${GITHUB_WORKSPACE}
+            echo "[INFO] Current Working Directory is $(pwd)"
+          done
+
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Render terraform docs inside the README.md and push changes back to PR branch
+        if: |
+          (steps.file_changes.outputs.docpaths == 'true')
+        uses: terraform-docs/gh-actions@v1.0.0
+        with:
+          config-file: .terraform-docs.yml
+          working-dir: ${{ env.MPATHS }}
+          output-file: README.md
+          output-method: replace
+          recursive: false
+          git-push: true
+          git-commit-message: Updated Terraform Documentation
